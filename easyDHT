@@ -1,0 +1,739 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha1"
+	"fmt"
+	"math/rand"
+	"strconv"
+	"time"
+)
+
+const (
+	k = 3   // 每个桶中最多存储的节点数
+	b = 160 // 每个节点最多拥有桶的数量
+)
+
+// 节点结构体
+//type Node struct {
+//	nodeId [20]byte // 节点ID
+//}
+
+// 桶结构体
+type Bucket struct {
+	nodes [][20]byte // 存储的节点列表
+}
+
+// K_Bucket结构体
+type K_Bucket struct {
+	buckets [b]*Bucket // 160个桶，每个桶对应一个bit位
+}
+
+// DHT结构体
+type DHT struct {
+	bucker1 [b]*Bucket1
+}
+type Bucket1 struct {
+	nodes []*Peer
+}
+
+// Peer结构体
+type Peer struct {
+	NodeId  [20]byte          // 本地节点ID
+	kBucket *K_Bucket         // K_Bucket
+	DHT     *DHT              // 节点所在的DHT
+	Data    map[string][]byte //存储的数据
+}
+
+// 随机生成string
+func randomString(n int) string {
+	var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
+// 随机生成ID
+func randbyte() [20]byte {
+	// 创建一个长度为20的byte数组
+	b := make([]byte, 20)
+	// 从随机数生成器中读取随机byte
+	_, err := rand.Read(b)
+	if err != nil {
+		panic(err)
+	}
+	var a [20]byte
+	for i := 0; i < len(a); i++ {
+		a[i] = b[i]
+	}
+	return a
+}
+
+// 转为二进制的160byte
+func To160byte(a [20]byte) [160]byte {
+	var binBytes [160]byte
+	for k, v := range a {
+		binStr := fmt.Sprintf("%08b", v)
+		for i := k * 8; i < (k+1)*8; i++ {
+			bit, _ := strconv.Atoi(string(binStr[i%8])) // 将二进制字符串的每一位转化为int类型
+			binBytes[i] = byte(bit)                     // 将int类型转化为byte类型
+		}
+		//fmt.Println(v)
+		//fmt.Println(binBytes[k*8 : (k+1)*8])
+	}
+	return binBytes
+}
+
+// xor 函数计算两个byte数组的异或结果
+func xor(a, b [20]byte) (c [20]byte) {
+	for i := 0; i < 20; i++ {
+		c[i] = a[i] ^ b[i]
+	}
+	return
+}
+
+// string转[20]byte
+func To20byte(a string) [20]byte {
+	b := [20]byte{}
+	copy(b[:], a)
+	return b
+}
+
+// [20]byte转string
+func Tostr(a [20]byte) string {
+	s := string(a[:])
+	return s
+}
+
+// 初始化Peer
+func NewPeer(localNodeId [20]byte) *Peer {
+	return &Peer{
+		NodeId:  localNodeId,
+		kBucket: NewK_bucket(),
+		Data:    make(map[string][]byte),
+		DHT:     NewDHT(),
+	}
+}
+
+// 初始化k桶
+func NewK_bucket() *K_Bucket {
+	kb := &K_Bucket{}
+	for i := 0; i < 160; i++ {
+		kb.buckets[i] = &Bucket{}
+	}
+	return kb
+}
+
+func NewDHT() *DHT {
+	kb := &DHT{}
+	for i := 0; i < 160; i++ {
+		kb.bucker1[i] = &Bucket1{}
+	}
+	return kb
+}
+
+func Tostrarr(a [20]byte) []string {
+	var strs [20]string
+
+	for i := 0; i < len(a); i++ {
+		strs[i] = fmt.Sprintf("%d", a[i])
+	}
+	return strs[:]
+}
+
+//SetValue 函数实现了题目要求的SetValue方法
+func (p *Peer) SetValue(key, value []byte) bool {
+	// 判断Key是否是Value的hash，如果不是，返回false
+	hash := sha1.Sum(value)
+	if !bytes.Equal(key, hash[:]) {
+		return false
+	}
+
+	// 判断当前Peer是否已经保存了这个键值对，如果已经保存，则返回true
+	for a, _ := range p.Data {
+		if a == string(key[:]) {
+			return true
+		}
+	}
+	//for _, b := range p.kBucket.buckets {
+	//	for _, peer := range b.nodes {
+	//		if bytes.Equal(peer.NodeId[:], hash[:]) && bytes.Equal(p.NodeId[:], hash[:]) {
+	//			return true
+	//		}
+	//	}
+	//}
+
+	// 保存这个键值对，并执行第3步
+	p.Data[string(key[:])] = value
+
+	// 判断Key距离自己的PeerID的距离，算出这个节点对应的桶
+	xorValue := To160byte(xor(hash, p.NodeId))
+
+	// 计算异或值的最高位
+	highestBit := 159
+	for i := 0; i <= 159; i++ {
+		if xorValue[i] == 1 {
+			highestBit = highestBit - i
+			break
+		}
+	}
+
+	// 筛选最小距离的peer
+	buckets := p.DHT.bucker1[highestBit].nodes
+	for k, v := range buckets {
+		if k == 2 {
+			break
+		}
+		v.SetValue(key, value)
+	}
+
+	return true
+
+	//sort.Slice(distances, func(i, j int) bool {
+	//	return bytes.Compare(distances[i].dist[:], distances[j].dist[:]) < 0
+	//})
+	// 选择两个最小的peer
+	// 最下两个peer所在的桶
+	//KbucketIndex1 := distances[0].indexToKb
+	//KbucketIndex2 := distances[1].indexToKb
+	// 最小两个peer的index
+	//bucketIndex1 := distances[1].indexToNode
+	//bucketIndex2 := distances[1].indexToNode
+	//closestPeers = append(closestPeers, p.kBucket.buckets[KbucketIndex1].nodes[bucketIndex1])
+	//closestPeers = append(closestPeers, p.kBucket.buckets[KbucketIndex2].nodes[bucketIndex2])
+	//bucketIndex := distances[0].indexToKb
+	// 从对应的桶里面选择2个距离Key最近的节点，再调用SetValue(Key, Value)函数
+	//var closestPeers []*Peer
+	//
+	//for _, peer := range p.kBucket.buckets[bucketIndex].nodes {
+	//	closestPeers = append(closestPeers, peer)
+	//}
+	//closestPeers = append(closestPeers, p.DHT.Peers[bucketIndex*100:bucketIndex*100+100]...)
+	//sort.Slice(closestPeers, func(i, j int) bool {
+	//	d1 := xor(hash, closestPeers[i].NodeId)
+	//	d2 := xor(hash, closestPeers[j].NodeId)
+	//	return bytes.Compare(d1[:], d2[:]) < 0
+	//})
+	//for _, peer := range closestPeers[:2] {
+	//	peer.SetValue(key, value)
+	//}
+	//
+	//return true
+}
+
+//GetValue 函数实现了题目要求的GetValue方法
+func (p *Peer) GetValue(key []byte) []byte {
+	// 判断当前的Key自己这个Peer是否已经存储对应的value，如果自己这个Peer中有，则返回对应的value
+	for k, v := range p.Data {
+		if k == string(key[:]) {
+			return v
+		}
+	}
+	var byte20key [20]byte
+	copy(byte20key[:], key)
+	// 如果自己没有存储当前Key，则对当前的Key执行一次FindNode操作，找到距离当前Key最近的2个Peer
+	p.FindNode(Tostr(byte20key))
+
+	xorValue := To160byte(xor(byte20key, p.NodeId))
+	// 计算异或值的最高位
+	highestBit := 159
+	for i := 0; i <= 159; i++ {
+		if xorValue[i] == 1 {
+			highestBit = highestBit - i
+			break
+		}
+	}
+	peers := p.DHT.bucker1[highestBit].nodes
+	for i := len(peers) - 1; i >= 0; i-- {
+		if peers[i] != nil {
+			value := peers[i].GetValue(key)
+			if value != nil {
+				hash := sha1.Sum(value)
+				if bytes.Equal(key, hash[:]) {
+					return value
+				}
+			}
+		}
+	}
+	return nil
+	//for k, v := range buckets.nodes {
+	//	if k == 2 {
+	//		break
+	//	}
+	//	value := v.GetValue(key)
+	//	if value != nil {
+	//		hash := sha1.Sum(value)
+	//		if bytes.Equal(key, hash[:]) {
+	//			return value
+	//		}
+	//	}
+	//}
+	//for _, b := range p.kBucket.buckets {
+	//	for _, peer := range b.nodes {
+	//		if bytes.Equal(peer.NodeId[:], hash[:]) && bytes.Equal(key, xor(p.ID, peer.ID)[:]) {
+	//			//hash := sha1.Sum(peer.NodeId[:])
+	//			return peer.Data[hash]
+	//		}
+	//	}
+	//}
+	//var closestPeers []*Peer
+	//for _, peer := range p.DHT.Peers {
+	//	closestPeers = append(closestPeers, peer)
+	//}
+	//sort.Slice(closestPeers, func(i, j int) bool {
+	//	b1 := xor(hash, closestPeers[i].NodeId)
+	//	b2 := xor(hash, closestPeers[j].NodeId)
+	//	return bytes.Compare(b1[:], b2[:]) < 0
+	//})
+	//closestPeers = closestPeers[:2]
+
+	// 然后对这两个Peer执行GetValue操作，一旦有一个节点返回value，则返回校验成功之后的value，否则返回nil
+	//for _, peer := range closestPeers {
+	//	value := peer.GetValue(key)
+	//	if value != nil {
+	//		hash := sha1.Sum(peer.NodeId[:])
+	//		xor1 := xor(p.NodeId, hash)
+	//		if bytes.Equal(key, xor1[:]) {
+	//			return value
+	//		}
+	//	}
+	//}
+
+}
+
+// 大整数转byte20
+//func intToBytes20(n *big.Int) [20]byte {
+//	// 将大整数转换为160位的二进制字符串
+//	b := make([]byte, 0, 160)
+//	for _, x := range n.Bytes() {
+//		// 将每个字节转换为8位的二进制字符串
+//		s := fmt.Sprintf("%08b", x)
+//		// 将8位的二进制字符串添加到结果中
+//		b = append(b, []byte(s)...)
+//	}
+//	str := string(b[:160])
+//	bytes, _ := hex.DecodeString(str)
+//	var bytes20 [20]byte
+//	copy(bytes20[:], bytes)
+//	return bytes20
+//}
+
+// byte20转大整数
+//func bytes20ToInt(data [20]byte) *big.Int {
+//	return new(big.Int).SetBytes(data[:])
+//}
+
+// 将节点插入到正确的桶中
+func (p *Peer) insertNode(nodeId string) {
+	// 计算节点ID与本地节点ID的异或值
+	nodeID := To20byte(nodeId)
+	xorValue := To160byte(xor(nodeID, p.NodeId))
+
+	// 计算异或值的最高位
+	highestBit := 159
+	for i := 0; i <= 159; i++ {
+		if xorValue[i] == 1 {
+			highestBit = highestBit - i
+			break
+		}
+	}
+	bucket := p.kBucket.buckets[highestBit]
+	// 如果桶中已经存在该节点，则将其移动到桶的末尾
+	for i, node := range bucket.nodes {
+		if bytes.Equal(node[:], nodeID[:]) {
+			if i != len(bucket.nodes)-1 {
+				bucket.nodes = append(bucket.nodes[:i], bucket.nodes[i+1:]...)
+				bucket.nodes = append(bucket.nodes, node)
+			}
+			return
+		}
+	}
+
+	// 如果桶中没满，将节点直接插入到对应的桶的末尾
+	if len(bucket.nodes) < k {
+		bucket.nodes = append(bucket.nodes, nodeID)
+		return
+	}
+
+	// 如果桶中已满，则将桶中最老的节点删除，并将新节点插入到桶的末尾
+	oldestNode := bucket.nodes[0]
+	bucket.nodes = bucket.nodes[1:]
+	bucket.nodes = append(bucket.nodes, nodeID)
+
+	// 将最老的节点插入到下一个桶中
+	nextBucketIndex := highestBit + 1
+	if nextBucketIndex < b {
+		nextBucket := p.kBucket.buckets[nextBucketIndex]
+		if len(nextBucket.nodes) < k {
+			nextBucket.nodes = append(nextBucket.nodes, oldestNode)
+			return
+		}
+		// 如果下一个桶也已满，则将最老的节点插入到下下个桶中
+		p.insertNode(nodeId)
+	}
+}
+
+// 插入peer
+func (p *Peer) insertPeer(addnode *Peer) {
+	// 计算节点ID与本地节点ID的异或值
+	xorValue := To160byte(xor(addnode.NodeId, p.NodeId))
+	// 计算异或值的最高位
+	highestBit := 159
+	for i := 0; i <= 159; i++ {
+		if xorValue[i] == 1 {
+			highestBit = highestBit - i
+			break
+		}
+	}
+	bucket := p.DHT.bucker1[highestBit]
+	// 如果桶中已经存在该节点，则将其移动到桶的末尾
+	for i, node := range bucket.nodes {
+		if bytes.Equal(addnode.NodeId[:], node.NodeId[:]) {
+			if i != len(bucket.nodes)-1 {
+				bucket.nodes = append(bucket.nodes[:i], bucket.nodes[i+1:]...)
+				bucket.nodes = append(bucket.nodes, addnode)
+			}
+			return
+		}
+	}
+
+	// 如果桶中没满，将节点直接插入到对应的桶的末尾
+	if len(bucket.nodes) < k {
+		bucket.nodes = append(bucket.nodes, addnode)
+		return
+	}
+
+	// 如果桶中已满，则将桶中最老的节点删除，并将新节点插入到桶的末尾
+	oldestNode := bucket.nodes[0]
+	bucket.nodes = bucket.nodes[1:]
+	bucket.nodes = append(bucket.nodes, addnode)
+
+	// 将最老的节点插入到下一个桶中
+	nextBucketIndex := highestBit + 1
+	if nextBucketIndex < b {
+		nextBucket := p.DHT.bucker1[highestBit]
+		if len(nextBucket.nodes) < k {
+			nextBucket.nodes = append(nextBucket.nodes, oldestNode)
+			return
+		}
+		// 如果下一个桶也已满，则将最老的节点插入到下下个桶中
+		p.insertPeer(addnode)
+	}
+}
+
+// 删除节点
+func (p *Peer) deleteNode(nodeId [20]byte) {
+	// 计算节点ID与本地节点ID的异或值
+	xorValue := To160byte(xor(nodeId, p.NodeId))
+
+	// 计算异或值的最高位
+	highestBit := 159
+	for i := 0; i <= 159; i++ {
+		if xorValue[i] == 1 {
+			highestBit = highestBit - i
+			break
+		}
+	}
+	bucket := p.kBucket.buckets[highestBit]
+	for i, node := range bucket.nodes {
+		if bytes.Equal(node[:], nodeId[:]) {
+			bucket.nodes = append(bucket.nodes[:i], bucket.nodes[i+1:]...)
+			break
+		}
+	}
+}
+
+// 更新节点
+func (p *Peer) updateNode(nodeId [20]byte) {
+	// 计算节点ID与本地节点ID的异或值
+	xorValue := To160byte(xor(nodeId, p.NodeId))
+
+	// 计算异或值的最高位
+	highestBit := 159
+	for i := 0; i <= 159; i++ {
+		if xorValue[i] == 1 {
+			highestBit = highestBit - i
+			break
+		}
+	}
+	bucket := p.kBucket.buckets[highestBit]
+	// 将最新的节点往前移
+	newindex := 0
+	for i, n := range bucket.nodes {
+		if bytes.Equal(n[:], nodeId[:]) {
+			newindex = i
+			break
+		}
+	}
+	if newindex > 0 {
+		return
+	} else {
+		newId := bucket.nodes[newindex]
+		for i := newindex; i > 0; i-- {
+			bucket.nodes[i] = bucket.nodes[i-1]
+		}
+		bucket.nodes[0] = newId
+	}
+
+}
+
+// 查找节点
+func (p *Peer) FindNode(nodeId string) []string {
+	// 先执行一次insertNode操作
+	// kb.insertNode(localNodeId, nodeId)
+
+	nodeID := To20byte(nodeId)
+	// 打印peer桶中所有的节点
+	//fmt.Println("打印peer桶中所有的节点")
+	//peer.kBucket.printBucketContents()
+
+	// 查找自己的桶中是否有该节点
+	for _, buckets := range p.kBucket.buckets {
+		for _, node := range buckets.nodes {
+			if bytes.Equal(node[:], nodeID[:]) {
+				//判断条件是否向其他节点FindNode的变量isFind
+				return Tostrarr(node)[:]
+				break
+			}
+		}
+	}
+
+	// 计算最近的桶的id
+	xorValue := To160byte(xor(nodeID, p.NodeId))
+
+	// 计算异或值的最高位
+	highestBit := 159
+	for i := 0; i <= 159; i++ {
+		if xorValue[i] == 1 {
+			highestBit = highestBit - i
+			break
+		}
+	}
+
+	bucket := p.DHT.bucker1[highestBit]
+	// 从对应的桶中随机抽选2个节点，发送FindNode(nodeId)操作
+	var selectedNodes []*Peer
+	for _, node := range bucket.nodes {
+		selectedNodes = append(selectedNodes, node)
+		if len(selectedNodes) == 2 {
+			break
+		}
+	}
+	for _, node := range selectedNodes {
+		if !bytes.Equal(node.NodeId[:], nodeID[:]) {
+			// 发送FindNode(nodeId)操作
+			//fmt.Printf("Sending FindNode(%v) to node %v\n", nodeID, node)
+			node.FindNode(nodeId)
+		}
+	}
+
+	return nil
+}
+
+// 打印每个桶中存在的NodeID
+func (p *Peer) printBucketContents() {
+	for i := 0; i < 160; i++ {
+		bucket := p.kBucket.buckets[i]
+		if len(bucket.nodes) > 0 {
+			fmt.Printf("Bucket %d: ", i)
+			fmt.Println()
+			for _, node := range bucket.nodes {
+				fmt.Printf("%v\n", node)
+			}
+
+		}
+	}
+}
+
+func main() {
+	//在main函数中，先完成对100个节点的初始化，即每个节点在什么桶⾥；
+	var peers []*Peer
+	for i := 0; i < 100; i++ {
+		nodeId := randbyte()
+		peer := NewPeer(nodeId)
+		//a := intToBytes20(nodeId)
+		//fmt.Println("转byte", a)
+		//fmt.Println("转bigint", bytes20ToInt(a))
+		peers = append(peers, peer)
+	}
+	for i := 0; i < 100; i++ {
+		for j := 0; j < 100; j++ {
+			if i != j {
+				peers[i].insertPeer(peers[j])
+				peers[i].insertNode(Tostr(peers[j].NodeId))
+			}
+		}
+	}
+	// peer节点情况
+	fmt.Println("peer节点情况")
+	for i, v := range peers {
+		fmt.Println("peer", i, ":")
+		v.printBucketContents()
+		fmt.Println()
+	}
+
+	//随机⽣成200个字符串，⻓度内容都是随机，然后计算出他们的Hash之后，随机从100个节点中选出⼀个执⾏SetValue(Key，Value)操作，并找⼀个数组记录这200个字符串的Key；
+	fmt.Println("随机生成插入和查询")
+	str := [200]string{}
+	strHash := [][20]byte{}
+	rand.Seed(time.Now().UnixNano())
+
+	for i := 0; i < 200; i++ {
+		strLen := rand.Intn(30) + 1
+		str[i] = randomString(strLen)
+		h20 := sha1.Sum([]byte(str[i]))
+		//strHash[i] = h20
+		strHash = append(strHash, h20)
+	}
+	// 打印随机字符串
+	fmt.Println("打印字符串key")
+	fmt.Println("--------------------------------")
+	for _, v := range strHash {
+		fmt.Println(v)
+	}
+	fmt.Println("--------------------------------")
+	rand.Seed(time.Now().UnixNano())
+
+	fmt.Println("测试")
+	for i := 0; i < 100; i++ {
+		peers[i].SetValue(strHash[i][:], []byte(str[i]))
+	}
+	for i := 0; i < 100; i++ {
+		fmt.Println(peers[i].GetValue(strHash[i][:]))
+	}
+
+	for i := 0; i < 100; i++ {
+		peerId := rand.Intn(100)
+		strid := rand.Intn(200)
+		peers[peerId].SetValue(strHash[strid][:], []byte(str[strid]))
+	}
+
+	//从200个Key中随机选择100个，然后每个Key再去随机找⼀个节点调⽤GetValue操作。
+	fmt.Println("随机插入和随机查找结果")
+	rand.Seed(time.Now().UnixNano())
+
+	for i := 0; i < 100; i++ {
+		peerId := rand.Intn(100)
+		strid := rand.Intn(200)
+		peers[peerId].SetValue(strHash[strid][:], []byte(str[strid]))
+		peers[peerId].GetValue(strHash[strid][:])
+		peers[peerId].SetValue(strHash[strid][:], []byte(str[strid]))
+		//fmt.Println([]byte(str[strid]))
+
+	}
+
+	// 自定义的set和get
+	fmt.Println("自定义的set和get")
+	value := [][20]byte{
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0},
+	}
+	keyto := [][20]byte{}
+	for i := 0; i < len(value); i++ {
+		key := sha1.Sum(value[i][:])
+		keyto = append(keyto, key)
+		peers[i].SetValue(key[:], value[i][:])
+	}
+	for i := 0; i < len(value); i++ {
+		fmt.Println(peers[i].GetValue(keyto[i][:]))
+	}
+
+	//value1 := [20]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	//key := sha1.Sum(value1[:])
+	//peers[1].SetValue(key[:], value1[:])
+	//fmt.Println(Tostr(key))
+	//fmt.Println(peers[1].Data)
+	//fmt.Println(peers[1].GetValue(value1[:]))
+	//fmt.Println(peers[1].Data[Tostr(key)])
+
+	// 第一次实验代码
+
+	//初始化5个Peer
+	//var peers []*Peer
+	//for i := 0; i < 5; i++ {
+	//	nodeId := randbyte()
+	//	peer := NewPeer(nodeId)
+	//	peers = append(peers, peer)
+	//}
+	////五个peer相互广播
+	//for i := 0; i < 5; i++ {
+	//	for j := 0; j < 5; j++ {
+	//		if i != j {
+	//			peers[i].insertNode(Tostr(peers[j].NodeId))
+	//		}
+	//	}
+	//}
+	//
+	//// 验证插入功能和印功能
+	//// 随机生成5个节点插入peer0,并打印peer0节点的中非空桶的存储的ID
+	////rand.Seed(time.Now().UnixNano())
+	////for i := 0; i < 5; i++ {
+	////	nodeId := randbyte()
+	////	peers[0].insertNode(NewPeer(nodeId).NodeId)
+	////}
+	////peers[0].printBucketContents()
+	//
+	//fmt.Println("200个新节点加入前")
+	//for i, peer := range peers {
+	//	fmt.Printf("Peer %d:\n", i)
+	//	peer.printBucketContents()
+	//	fmt.Println()
+	//}
+	//
+	////将200个新节点加入网络
+	//fmt.Println("200新节点加入后")
+	//for i := 0; i < 200; i++ {
+	//	// 生成新的节点
+	//	nodeId := randbyte()
+	//	peer := NewPeer(nodeId)
+	//	peers = append(peers, peer)
+	//
+	//	// 随街选择节点加入
+	//	randId := rand.Intn(5)
+	//	addtopeer := peers[randId]
+	//
+	//	// 将随机节点插入到新节点
+	//	peer.insertNode(Tostr(addtopeer.NodeId))
+	//	// 将随机加入节点的信息广播给随机生成的节点
+	//	for _, bucket := range addtopeer.kBucket.buckets {
+	//		if len(bucket.nodes) > 0 {
+	//			for _, node := range bucket.nodes {
+	//				peer.insertNode(Tostr(node))
+	//			}
+	//		}
+	//	}
+	//	// 新节点加入随机节点
+	//	addtopeer.insertNode(Tostr(peer.NodeId))
+	//}
+	//
+	//// 打印每个节点的桶的信息
+	//// 打印每个节点的桶信息
+	//// 这里只打印了桶中有节点的桶
+	//for i, peer := range peers {
+	//	fmt.Printf("Peer %d:\n", i)
+	//	peer.printBucketContents()
+	//	fmt.Println()
+	//}
+	//
+	//// 查找节点测试
+	//// 随街生成peer节点
+	//randfindpeer := NewPeer(randbyte())
+	//findform := rand.Intn(200)
+	//fmt.Println("在", peers[findform].NodeId, "peer节点中查找", randfindpeer.NodeId)
+	//isFind := peers[findform].FindNode(Tostr(randfindpeer.NodeId))
+	//if isFind != nil {
+	//	fmt.Println("成功查找该", randfindpeer.NodeId, "在", peers[findform].NodeId, "peer节点中")
+	//} else {
+	//	fmt.Println("该", randfindpeer.NodeId, "节点不在", peers[findform].NodeId, "peer节点中")
+	//}
+
+}
